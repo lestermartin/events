@@ -1,0 +1,304 @@
+-- DEMO RUNS ON STARBURST GALAXY, but should run anywhere
+--  you have access to Iceberg
+
+-- SET UP A DATA LAKE CATALOG TO YOUR OWN CLOUD OBJECT STORE
+--  this will allow you to create/populate/modify tables
+
+-- Create a schema to leverage (use your catalogname.schemaname)
+DROP SCHEMA students.stltug CASCADE;
+CREATE SCHEMA students.stltug;
+USE students.stltug;
+
+-- **** SCENARIO 1: CREATE AND ADD SOME RECORDS
+
+-- Still my most favorite book ever
+CREATE TABLE dune_characters (
+   id integer,
+   name varchar(55),
+   description varchar(255)
+) WITH (
+   TYPE = 'iceberg', FORMAT = 'parquet'
+);
+
+-- VERIFY THE OBJECT STORE'S CONTENTS
+
+-- add the Atreides family
+INSERT INTO dune_characters
+ (id, name, description)
+VALUES
+ (101, 'Leto', 'Ruler of House Atreides'),
+ (102, 'Jessica', 'Concubine of the Duke'),
+ (103, 'Paul', 'Son of Leto (aka Dale Cooper)');
+SELECT * FROM dune_characters;
+
+-- VERIFY THE OBJECT STORE'S CONTENTS
+
+-- See the 2 snapshots that exist
+SELECT made_current_at,
+       snapshot_id, parent_id
+  FROM "dune_characters$history"
+ ORDER BY made_current_at;
+
+-- See the single file that contains the first 3 records
+SELECT
+ substring(file_path, position('/data/' IN file_path) + 6)
+   AS file_path,
+ record_count,
+ value_counts,
+ null_value_counts,
+ lower_bounds,
+ upper_bounds
+FROM
+ "dune_characters$files";
+
+-- Add some more main characters
+INSERT INTO dune_characters
+ (id, name, description)
+VALUES
+ (104, 'Thufir', 'Mentat'),
+ (201, 'Vladimir', 'Ruler of House Harkonnen'),
+ (202, 'Rabban', 'Ruthless nephew of Vladimir'),
+ (203, 'Feyd-Rautha', 'Savvy nephew of Vladimir (played by Sting)'),
+ (301, 'Reverend Mother Gaius Helen Mohiam', null);
+SELECT * FROM dune_characters;
+
+-- VERIFY THE OBJECT STORE'S CONTENTS
+
+-- See the 3 snapshots that exist
+SELECT made_current_at,
+       snapshot_id, parent_id
+  FROM "dune_characters$history"
+ ORDER BY made_current_at;
+
+-- See the 2nd file contains the next 5 records
+SELECT
+ substring(file_path, position('/data/' IN file_path) + 6)
+   AS file_path,
+ record_count,
+ value_counts,
+ null_value_counts,
+ lower_bounds,
+ upper_bounds
+FROM
+ "dune_characters$files";
+
+-- **** SCENARIO 2: TIME-TRAVEL & ROLLBACK
+
+-- Simulate a cell phone provisioning tracking system
+CREATE TABLE phone_provisioning (
+ phone_nbr bigint,
+ event_time timestamp(6),
+ action varchar(15),
+ notes varchar(150)
+)
+WITH (
+ type='iceberg',
+ partitioning=ARRAY['day(event_time)']
+);
+
+-- Single snapshot (the CREATE TABLE)
+SELECT * FROM "phone_provisioning$snapshots";
+
+-- Add records from 7 days ago
+INSERT INTO
+ phone_provisioning (phone_nbr, event_time, action, notes)
+VALUES
+ (
+   1111111, current_timestamp(6) - interval '7' day, 'ordered', null
+ ),
+ (
+   2222222, current_timestamp(6) - interval '7' day, 'ordered', null
+ );
+SELECT * FROM phone_provisioning ORDER BY event_time DESC;
+
+-- 2 snapshots now
+SELECT * FROM "phone_provisioning$snapshots";
+
+-- Add records from 6 days aga
+INSERT INTO
+ phone_provisioning (phone_nbr, event_time, action, notes)
+VALUES
+ (
+   1111111, current_timestamp(6) - interval '6' day, 'activated', null
+ ),
+ (
+   2222222, current_timestamp(6) - interval '6' day, 'activated', null
+ );
+SELECT * FROM phone_provisioning ORDER BY event_time DESC;
+
+-- 3 snapshots now
+SELECT * FROM "phone_provisioning$snapshots";
+
+-- Add a error record from 5 days ago
+INSERT INTO
+  phone_provisioning (phone_nbr, event_time, action, notes)
+VALUES
+  (2222222, current_timestamp(6) - interval '5' day, 'errorReported',
+  'customer reports unable to initiate call');
+SELECT * FROM phone_provisioning ORDER BY event_time DESC;
+
+-- 4 snapshots now (don't need to run)
+--SELECT * FROM "phone_provisioning$snapshots";
+
+-- Make corrections to notes field that were null
+UPDATE phone_provisioning
+  SET notes = 'customer requested new number'
+WHERE action = 'ordered'
+  AND notes is null;
+--
+UPDATE phone_provisioning
+  SET notes = 'number successfully activated'
+WHERE action = 'activated'
+  AND notes is null;
+--
+SELECT * FROM phone_provisioning ORDER BY event_time DESC;
+
+-- SIX snapshots; each UPDATE created a snapshot
+SELECT * FROM "phone_provisioning$snapshots";
+
+-- WALK THROUGH ALL SIX summary FIELDS TO VERIFY ACCURACY
+--  *AND* DISCUSS NO IN-PLACE UPDATES (RM & REPL STRATEGY)
+
+-- Replace 99999999 with your SECOND snapshot_id
+SELECT * FROM phone_provisioning
+FOR VERSION AS OF 3385445583963154160
+ORDER BY event_time DESC;
+
+
+-- What did the data look like 5.5 days ago?
+SELECT * FROM phone_provisioning
+FOR TIMESTAMP AS OF current_timestamp(6) - interval '132' hour
+ORDER BY event_time DESC;
+
+-- Try a few mins ago since it is COMPUTER time of the operations, 
+--  not the value of any date/ts field that is being looked at
+SELECT * FROM phone_provisioning
+FOR TIMESTAMP AS OF current_timestamp(6) - interval '4' minute 
+ORDER BY event_time DESC;
+
+-- save the snapshot_id value in the editor (current snapshot)
+SELECT snapshot_id FROM "phone_provisioning$history"
+ORDER BY made_current_at DESC LIMIT 1;
+-- i got 9999999999
+
+-- trash some records
+DELETE FROM phone_provisioning
+ WHERE phone_nbr = 2222222;
+SELECT * FROM phone_provisioning ORDER BY event_time DESC;
+
+-- Rollback to before the DELETE command (BE SURE TO CHANGE
+--  MYCATALOG and MYSCHEMA and 9999999999 TO YOUR VALUES)
+CALL MYCATALOG.system.rollback_to_snapshot(
+   'MYSCHEMA', 'phone_provisioning',
+    9999999999);
+SELECT * FROM phone_provisioning ORDER BY event_time DESC;
+
+-- **** SCENARIO 3: ADVANCED FEATURES
+
+CREATE TABLE planes (
+   tail_number varchar(15),
+   name varchar(150),
+   color varchar(15)
+) WITH ( type = 'iceberg');
+
+INSERT INTO planes (tail_number, name)
+VALUES
+ ('N707JT', 'John Travolta''s Boeing 707'),
+ ('N1KE', 'Nike corp jet');
+
+ALTER TABLE planes RENAME COLUMN name TO description;
+SELECT * FROM planes;
+
+INSERT INTO planes (tail_number, color, description)
+VALUES
+ ('N89TC', 'white',
+  '1975 Bombardier Learjet 35 w/Light Jet classification');
+SELECT * FROM planes;
+
+ALTER TABLE planes ADD COLUMN class varchar(50);
+ALTER TABLE planes ADD COLUMN year integer;
+ALTER TABLE planes ADD COLUMN make varchar(100);
+ALTER TABLE planes ADD COLUMN model varchar(100);
+ALTER TABLE planes DROP COLUMN color;
+SELECT * FROM planes;
+
+UPDATE planes
+  SET class = 'Jet Airliner',
+      year = 1964,
+      make = 'Boeing',
+      model = '707-138B'
+WHERE tail_number = 'N707JT';
+--
+UPDATE planes
+  SET class = 'Heavy Jet',
+      year = 2021,
+      make = 'Gulfstream',
+      model = 'G650'
+WHERE tail_number = 'N1KE';
+--
+UPDATE planes
+  SET class = 'Light Jet',
+      year = 1975,
+      make = 'Bombardier',
+      model = 'Learjet 35',
+      description = null
+WHERE tail_number = 'N89TC';
+--
+SELECT * FROM planes;
+
+ALTER TABLE planes RENAME TO aircrafts;
+SELECT * FROM aircrafts;
+
+ALTER TABLE aircrafts
+SET PROPERTIES partitioning = ARRAY['class'];
+
+INSERT INTO aircrafts
+ (tail_number, class, year, make, model, description)
+VALUES
+ ('N535NA', 'Helicopter', 1969, 'Sikorsky', 'UH-19D', 'NASA'),
+ ('N611TV', 'Helicopter', 2022, 'Robinson', 'R66', null);
+SELECT tail_number, class, year, make, model, description
+  FROM aircrafts ORDER BY tail_number;
+
+SELECT partition, record_count, file_count
+  FROM "aircrafts$partitions";
+
+ALTER TABLE aircrafts
+SET PROPERTIES partitioning = ARRAY['year'];
+--
+SELECT year, count() nbr_for_year
+  FROM aircrafts
+ GROUP BY year ORDER BY year;
+--
+SELECT partition, record_count, file_count
+  FROM "aircrafts$partitions";
+
+INSERT INTO aircrafts
+ (tail_number, class, year, make, model, description)
+VALUES
+ ('dummy', 'unknown', 1964, 'acme', 'cool', null),
+ ('dummy', 'unknown', 1969, 'acme', 'cool', null),
+ ('dummy', 'unknown', 1975, 'acme', 'cool', null),
+ ('dummy', 'unknown', 2021, 'acme', 'cool', null),
+ ('dummy', 'unknown', 2022, 'acme', 'cool', null);
+--
+SELECT year, count() nbr_for_year
+  FROM aircrafts
+ GROUP BY year ORDER BY year;
+--
+SELECT partition, record_count, file_count, data
+  FROM "aircrafts$partitions"
+ ORDER BY record_count;
+
+SELECT file_path, record_count, file_size_in_bytes
+  FROM "aircrafts$files";
+
+-- GO LOOK AT OBJECT STORAGE FILES & FOLDERS
+
+-- Notice the small file sizes
+ALTER TABLE aircrafts EXECUTE optimize;
+--
+SELECT file_path, record_count, file_size_in_bytes
+  FROM "aircrafts$files";
+-- Still small, but everything has been repartitioned!! ;)
+
