@@ -1,0 +1,230 @@
+-- WORKSHOP 3: Data pipelines, views & data products (SQL)
+
+-- Lab 3, Part 1, Step 3
+SELECT * from du2024.discovered_schema.pokemon LIMIT 100;
+
+SHOW CREATE TABLE discovered_schema.pokemon;
+
+-- Lab 3, Part 1, Step 4
+CREATE SCHEMA du2024.workshop3;
+
+-- Lab 3, Part 3, Step 2
+CREATE TABLE pokemon_spawns_structure
+(
+     number INTEGER,
+     name VARCHAR,
+     latitude DOUBLE,
+     longitude DOUBLE,
+     encounter_seconds BIGINT
+)
+WITH (
+     format = 'ORC', 
+     type = 'ICEBERG'
+);
+
+-- Lab 3, Part 3, Step 3
+INSERT INTO
+     pokemon_spawns_structure
+SELECT
+     CAST(num AS INTEGER) AS number,
+     name,
+     round(lat, 2) AS latitude,
+     round(lng, 2) AS longitude,
+     CASE
+          WHEN encounter_ms = -1 THEN encounter_ms
+          ELSE (encounter_ms / 1000)
+     END AS encounter_seconds
+FROM du2024.discovered_schema.pokemon
+WHERE lat >= 37.62 and lat <= 37.86 
+  AND lng >= -122.51 and lng <= -122.12;
+
+-- Lab 3, Part 3, Step 4
+SELECT * FROM pokemon_spawns_structure LIMIT 10;
+
+-- Lab 3, Part 3, Step 5
+SELECT
+     S.number,
+     S.name,
+     S.latitude,
+     S.longitude,
+     P.type_1,
+     P.type_2,
+     P.catch_rate,
+     p.generation
+FROM pokemon_lkp.pokemon_lookup.pokedex p
+JOIN pokemon_spawns_structure s 
+  ON CAST(p.number AS INTEGER) = s.number;
+
+-- Lab 3, Part 3, Step 6
+CREATE TABLE pokemon_pokedex_structure
+(
+     name VARCHAR,
+     number INTEGER,
+     type_1 VARCHAR,
+     type_2 VARCHAR,
+     catch_rate INTEGER,
+     final_evolution DOUBLE,
+     generation DOUBLE,
+     abilities DOUBLE
+)
+WITH (
+     type = 'DELTA'
+);
+
+-- Lab 3, Part 3, Step 7
+INSERT INTO pokemon_pokedex_structure
+SELECT
+     name,
+     CAST(number AS INTEGER) as number,
+     type_1,
+     type_2,
+     CAST(catch_rate AS INTEGER) as catch_rate,
+     CAST(final_evolution AS DOUBLE) as final_evolution,
+     CAST(generation AS DOUBLE) as generation,
+     CAST(abilities AS DOUBLE) as abilities
+FROM pokemon_lkp.pokemon_lookup.pokedex;
+
+-- Lab 3, Part 3, Step 8
+SELECT * FROM pokemon_pokedex_structure LIMIT 10;
+
+-- Lab 3, Part 4, Step 2
+CREATE TABLE pokemon_final_spawns AS
+SELECT
+     s.number,
+     s.name,
+     s.latitude,
+     s.longitude,
+     p.type_1,
+     p.type_2,
+     p.catch_rate
+FROM pokemon_pokedex_structure p
+JOIN pokemon_spawns_structure s ON p.number = s.number
+WHERE catch_rate > 100;
+
+SELECT * FROM pokemon_final_spawns LIMIT 10;
+
+-- Lab 3, Part 4, Step 3
+SELECT
+     type_1,
+     name,
+     COUNT(*) AS total_appearances,
+     RANK() OVER (PARTITION BY type_1 ORDER BY count(name) DESC
+     ) AS rank_column
+FROM
+     pokemon_final_spawns
+GROUP BY
+     type_1,
+     name
+ORDER BY
+     type_1,
+     COUNT(*) DESC;
+
+WITH
+popular_types AS (
+    SELECT
+         type_1,
+         name,
+         COUNT(*) AS total_appearances,
+         RANK() OVER (PARTITION BY type_1 ORDER BY COUNT(name) DESC
+         ) AS rank_column
+      FROM
+         pokemon_final_spawns
+      GROUP BY
+         type_1,
+         name
+      ORDER BY
+         type_1,
+         COUNT(*) DESC
+)
+SELECT
+   type_1,
+   name,
+   total_appearances
+FROM
+   popular_types
+WHERE
+   rank_column = 1
+ORDER BY 
+   total_appearances DESC;
+
+-- Lab 3, Part 4, Step 4
+CREATE OR REPLACE VIEW popular_types_sf_vw AS
+WITH
+popular_types AS (
+    SELECT
+         type_1,
+         name,
+         COUNT(*) AS total_appearances,
+         RANK() OVER (PARTITION BY type_1 ORDER BY COUNT(name) DESC
+         ) AS rank_column
+      FROM
+         pokemon_final_spawns
+      GROUP BY
+         type_1,
+         name
+      ORDER BY
+         type_1,
+         COUNT(*) DESC
+)
+SELECT
+   type_1,
+   name,
+   total_appearances
+FROM
+   popular_types
+WHERE
+   rank_column = 1
+ORDER BY 
+   total_appearances DESC;
+
+SELECT * FROM popular_types_sf_vw;
+
+-- Lab 3, Part 4, Step 5
+CREATE OR REPLACE VIEW counts_by_types_sf_vw AS
+SELECT
+     type_1,
+     type_2,
+     ROUND(AVG(catch_rate), 2) AS avg_catch_rate,
+     COUNT(name) AS total_count
+FROM
+     pokemon_final_spawns
+GROUP BY
+     GROUPING SETS ((type_1, type_2))
+ORDER BY
+     type_1,
+     total_count DESC;
+
+SELECT * FROM counts_by_types_sf_vw;
+
+-- Lab 3, Part 5, Step 2
+SELECT * FROM counts_by_types_sf_vw;
+
+CREATE OR REPLACE VIEW popular_types_sf_vw AS
+WITH
+popular_types AS (
+    SELECT
+         type_1,
+         name,
+         COUNT(*) AS total_appearances,
+         RANK() OVER (PARTITION BY type_1 ORDER BY COUNT(name) DESC
+         ) AS rank_column
+      FROM
+         pokemon_final_spawns
+      GROUP BY
+         type_1,
+         name
+      ORDER BY
+         type_1,
+         COUNT(*) DESC
+)
+SELECT
+   type_1,
+   name,
+   total_appearances
+FROM
+   popular_types
+WHERE
+   rank_column = 1
+ORDER BY 
+   total_appearances DESC;
+
