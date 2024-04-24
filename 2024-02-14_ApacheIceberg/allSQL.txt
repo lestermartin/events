@@ -1,0 +1,319 @@
+-- Lab 1; Step 1
+USE sample.demo;
+SELECT * FROM astronauts;
+
+
+-- Lab 2; Step 2
+CREATE SCHEMA webinar2.myschema;
+USE webinar2.myschema;
+
+CREATE TABLE my_iceberg_tbl (
+   id integer,
+   name varchar(55),
+   description varchar(255)
+) WITH (
+   TYPE = 'iceberg', FORMAT = 'parquet'
+);
+
+INSERT INTO my_iceberg_tbl
+ (id, name, description)
+VALUES
+ (101, 'Leto', 'Ruler of House Atreides'),
+ (102, 'Jessica', 'Concubine of the Duke'),
+ (103, 'Paul', 'Son of Leto (aka Dale Cooper)');
+
+SELECT * FROM my_iceberg_tbl;
+
+
+-- Lab 2; Step 4
+SELECT made_current_at,
+       snapshot_id, parent_id
+  FROM "my_iceberg_tbl$history"
+ ORDER BY made_current_at;
+
+SELECT
+ substring(file_path, position('/data/' IN file_path) + 6)
+   AS file_path,
+ record_count,
+ value_counts,
+ null_value_counts,
+ lower_bounds,
+ upper_bounds
+FROM
+ "my_iceberg_tbl$files";
+
+
+
+-- Lab 2; Step 5
+ INSERT INTO my_iceberg_tbl
+ (id, name, description)
+VALUES
+ (104, 'Thufir', 'Mentat'),
+ (201, 'Vladimir', 'Ruler of House Harkonnen'),
+ (202, 'Rabban', 'Ruthless nephew of Vladimir'),
+ (203, 'Feyd-Rautha', 'Savvy nephew of Vladimir (played by Sting)'),
+ (301, 'Reverend Mother Gaius Helen Mohiam', null);
+
+SELECT
+ substring(file_path, position('/data/' IN file_path) + 6),
+ record_count,
+ value_counts,
+ null_value_counts,
+ lower_bounds,
+ upper_bounds
+FROM
+ "my_iceberg_tbl$files";
+
+ SELECT made_current_at,
+       snapshot_id, parent_id
+  FROM "my_iceberg_tbl$history"
+ ORDER BY made_current_at;
+
+
+-- Lab 3; Step 1
+USE webinar2.myschema;
+
+CREATE TABLE phone_provisioning (
+ phone_nbr bigint,
+ event_time timestamp(6),
+ action varchar(15),
+ notes varchar(150)
+)
+WITH (
+ type='iceberg',
+ partitioning=ARRAY['day(event_time)']
+);
+
+SELECT * FROM "phone_provisioning$snapshots";
+
+
+-- Lab 3; Step 3
+INSERT INTO
+ phone_provisioning (phone_nbr, event_time, action, notes)
+VALUES
+ (
+   1111111, current_timestamp(6) - interval '7' day, 'ordered', null
+ ),
+ (
+   2222222, current_timestamp(6) - interval '7' day, 'ordered', null
+ );
+
+SELECT * FROM phone_provisioning ORDER BY event_time DESC;
+SELECT * FROM "phone_provisioning$snapshots";
+
+
+-- Lab 3; Step 4
+INSERT INTO
+ phone_provisioning (phone_nbr, event_time, action, notes)
+VALUES
+ (
+   1111111, current_timestamp(6) - interval '6' day, 'activated', null
+ ),
+ (
+   2222222, current_timestamp(6) - interval '6' day, 'activated', null
+ );
+
+SELECT * FROM phone_provisioning ORDER BY event_time DESC;
+SELECT * FROM "phone_provisioning$snapshots";
+
+
+-- Lab 3; Step 5
+INSERT INTO
+  phone_provisioning (phone_nbr, event_time, action, notes)
+VALUES
+  (2222222, current_timestamp(6) - interval '5' day, 'errorReported',
+  'customer reports unable to initiate call');
+
+SELECT * FROM phone_provisioning ORDER BY event_time DESC;
+SELECT * FROM "phone_provisioning$snapshots";
+
+
+-- Lab 3; Step 6
+UPDATE phone_provisioning
+  SET notes = 'customer requested new number'
+WHERE action = 'ordered'
+  AND notes is null;
+
+UPDATE phone_provisioning
+  SET notes = 'number successfully activated'
+WHERE action = 'activated'
+  AND notes is null;
+
+SELECT * FROM phone_provisioning ORDER BY event_time DESC;
+SELECT * FROM "phone_provisioning$snapshots";
+
+
+-- Lab 3; Step 8
+SELECT * FROM phone_provisioning
+FOR VERSION AS OF 99999999
+ORDER BY event_time DESC;
+
+
+-- Lab 3; Step 9
+SELECT * FROM phone_provisioning
+FOR TIMESTAMP AS OF current_timestamp(6) - interval '132' hour
+ORDER BY event_time DESC;
+
+SELECT * FROM phone_provisioning
+FOR TIMESTAMP AS OF current_timestamp(6) - interval '4' minute 
+ORDER BY event_time DESC;
+
+
+-- Lab 3; Step 10
+-- save the snapshot_id value in the editor
+SELECT snapshot_id FROM "phone_provisioning$history"
+ORDER BY made_current_at DESC LIMIT 1;
+
+-- i got 9999999999
+
+DELETE FROM phone_provisioning
+ WHERE phone_nbr = 2222222;
+
+SELECT * FROM phone_provisioning ORDER BY event_time DESC;
+
+CALL webinar2.system.rollback_to_snapshot(
+   'myschema', 'phone_provisioning',
+    999999999);
+
+SELECT * FROM phone_provisioning ORDER BY event_time DESC;
+
+
+-- Lab 4; Step 1
+USE webinar2.myschema;
+
+CREATE TABLE planes (
+   tail_number varchar(15),
+   name varchar(150),
+   color varchar(15)
+) WITH ( type = 'iceberg');
+
+
+-- Lab 4; Step 2
+INSERT INTO planes (tail_number, name)
+VALUES
+ ('N707JT', 'John Travolta''s Boeing 707'),
+ ('N1KE', 'Nike corp jet');
+
+
+-- Lab 4; Step 3
+ ALTER TABLE planes RENAME COLUMN name TO description;
+
+ SELECT * FROM planes;
+
+
+-- Lab 4; Step 4
+ INSERT INTO planes (tail_number, color, description)
+VALUES
+ ('N89TC', 'white',
+  '1975 Bombardier Learjet 35 w/Light Jet classification');
+
+
+-- Lab 4; Step 5
+ALTER TABLE planes ADD COLUMN class varchar(50);
+ALTER TABLE planes ADD COLUMN year integer;
+ALTER TABLE planes ADD COLUMN make varchar(100);
+ALTER TABLE planes ADD COLUMN model varchar(100);
+
+ALTER TABLE planes DROP COLUMN color;
+
+
+-- Lab 4; Step 6
+UPDATE planes
+  SET class = 'Jet Airliner',
+      year = 1964,
+      make = 'Boeing',
+      model = '707-138B'
+WHERE tail_number = 'N707JT';
+
+UPDATE planes
+  SET class = 'Heavy Jet',
+      year = 2021,
+      make = 'Gulfstream',
+      model = 'G650'
+WHERE tail_number = 'N1KE';
+
+UPDATE planes
+  SET class = 'Light Jet',
+      year = 1975,
+      make = 'Bombardier',
+      model = 'Learjet 35',
+      description = null
+WHERE tail_number = 'N89TC';
+
+SELECT * FROM planes;
+
+
+-- Lab 4; Step 7
+ALTER TABLE planes RENAME TO aircrafts;
+
+ALTER TABLE aircrafts
+SET PROPERTIES partitioning = ARRAY['class'];
+
+
+-- Lab 4; Step 8
+INSERT INTO aircrafts
+ (tail_number, class, year, make, model, description)
+VALUES
+ ('N535NA', 'Helicopter', 1969, 'Sikorsky', 'UH-19D', 'NASA'),
+ ('N611TV', 'Helicopter', 2022, 'Robinson', 'R66', null);
+
+ SELECT tail_number, class, year, make, model, description
+  FROM aircrafts ORDER BY tail_number;
+
+
+-- Lab 4; Step 9
+SELECT partition, record_count, file_count
+  FROM "aircrafts$partitions";
+
+
+-- Lab 4; Step 10
+ALTER TABLE aircrafts
+SET PROPERTIES partitioning = ARRAY['year'];
+
+SELECT year, count() nbr_for_year
+  FROM aircrafts
+ GROUP BY year ORDER BY year;
+
+INSERT INTO aircrafts
+ (tail_number, class, year, make, model, description)
+VALUES
+ ('dummy', 'unknown', 1964, 'acme', 'cool', null),
+ ('dummy', 'unknown', 1969, 'acme', 'cool', null),
+ ('dummy', 'unknown', 1975, 'acme', 'cool', null),
+ ('dummy', 'unknown', 2021, 'acme', 'cool', null),
+ ('dummy', 'unknown', 2022, 'acme', 'cool', null);
+
+SELECT year, count() nbr_for_year
+  FROM aircrafts
+ GROUP BY year ORDER BY year;
+
+SELECT partition, record_count, file_count, data
+  FROM "aircrafts$partitions"
+ ORDER BY record_count;
+
+SELECT file_path, record_count, file_size_in_bytes
+  FROM "aircrafts$files";
+
+
+-- Lab 4; Step 11
+SELECT file_path, record_count, file_size_in_bytes
+  FROM "aircrafts$files";
+
+ALTER TABLE aircrafts EXECUTE optimize;
+
+SELECT file_path, record_count, file_size_in_bytes
+  FROM "aircrafts$files";
+
+
+-- Lab 4; Step 12
+SELECT partition, record_count, file_count, data
+  FROM "aircrafts$partitions"
+ ORDER BY record_count;
+
+ALTER TABLE aircrafts
+SET PROPERTIES partitioning = ARRAY[];
+
+ALTER TABLE aircrafts EXECUTE optimize;
+
+SELECT file_path, record_count, file_size_in_bytes
+  FROM "aircrafts$files";
