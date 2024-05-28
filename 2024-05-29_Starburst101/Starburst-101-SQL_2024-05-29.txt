@@ -1,0 +1,166 @@
+-- SQL used in Starburst 101 (May 29, 2024)
+--  no need to copy/n/paste if you load this 
+--  in a query editor window in the Starburst UI
+
+
+-- Lab 2; Part 4; Step 3
+SELECT * FROM "nyc_uber_rides"."discovered_schema"."year_month" LIMIT 10;
+
+SHOW CREATE TABLE discovered_schema.year_month;
+
+
+-- Lab 3; Part 1
+SELECT * FROM discovered_schema.year_month LIMIT 10;
+
+SELECT DISTINCT (year_month) FROM discovered_schema.year_month ORDER BY year_month;
+
+--ALSO, check out the Snowflake bronze/land table
+select * from taxi_zone_lookup.taxi_zones.zone_lookup;
+
+
+-- Lab 3; Part 2; Step 2
+--replace <yourname> appropriately
+CREATE SCHEMA nyc_uber_rides.<yourname>;  
+
+
+-- Lab 3; Part 3; Step 1
+CREATE TABLE ride_pickups ( 
+     dispatching_base varchar, 
+     pickup_date timestamp (6), 
+     affiliated_base_num varchar, 
+     location_id integer, 
+     year_month varchar
+)
+WITH (
+    type = 'iceberg',
+    format = 'parquet',
+    partitioning = array['year_month']
+);
+
+
+-- Lab 3; Part 3; Step 2
+INSERT INTO
+ ride_pickups
+SELECT
+ dispatching_base,
+ cast(pickup_date as timestamp (6)), 
+ affiliated_base_num, 
+ cast(location_id as INT), 
+ year_month
+FROM
+ discovered_schema.year_month;
+
+
+-- Lab 3; Part 3; Step 3
+SELECT * FROM ride_pickups LIMIT 10; 
+DESCRIBE ride_pickups;
+
+SELECT * FROM "ride_pickups$snapshots"; 
+SELECT * FROM "ride_pickups$partitions"; 
+SELECT * FROM "ride_pickups$history";
+
+
+-- Lab 3; Part 3; Step 4
+SELECT
+ p.dispatching_base, 
+ p.pickup_date, 
+ p.location_id, 
+ l.borough,
+ l.zone
+FROM
+ ride_pickups p
+INNER JOIN taxi_zone_lookup.taxi_zones.zone_lookup l 
+        ON p.location_id = l.location_id;
+
+
+-- Lab 3; Part 4; Step 1
+CREATE TABLE rides_by_zone
+WITH (type = 'iceberg', format = 'parquet') AS
+SELECT
+ p.dispatching_base, p.pickup_date, p.location_id,
+ date_format(p.pickup_date, '%W') weekday, 
+ date_format(p.pickup_date, '%M') month, 
+ l.borough, l.zone
+FROM
+ ride_pickups p
+INNER JOIN taxi_zone_lookup.taxi_zones.zone_lookup l 
+        ON p.location_id = l.location_id;
+
+SELECT * FROM rides_by_zone LIMIT 10;
+
+
+-- Lab 3; Part 4; Step 2
+WITH weekly AS (
+ SELECT
+    borough, weekday, COUNT(*) AS total_rides,
+    RANK() OVER (PARTITION BY borough ORDER BY COUNT(weekday) DESC 
+    ) AS rank_column
+ FROM
+    rides_by_zone
+ GROUP BY
+    borough, weekday
+ ORDER BY
+    borough, COUNT(*) DESC 
+)
+SELECT
+ borough, weekday, total_rides
+FROM
+ weekly
+WHERE
+ rank_column = 1;
+
+
+-- Lab 3; Part 4; Step 3
+CREATE OR REPLACE VIEW borough_most_pop_weekday_vw AS
+WITH weekly AS (
+ SELECT
+    borough, weekday, COUNT(*) AS total_rides,
+    RANK() OVER (PARTITION BY borough ORDER BY COUNT(weekday) DESC 
+    ) AS rank_column
+ FROM
+    rides_by_zone
+ GROUP BY
+    borough, weekday
+ ORDER BY
+    borough, COUNT(*) DESC 
+)
+SELECT
+ borough, weekday, total_rides
+FROM
+ weekly
+WHERE
+ rank_column = 1;
+
+SELECT * FROM borough_most_pop_weekday_vw;
+
+CREATE OR REPLACE VIEW borough_most_pop_month_vw AS
+WITH monthly AS (
+ SELECT
+    borough, month, COUNT(*) AS total_rides,
+    RANK() OVER (PARTITION BY borough ORDER BY COUNT(month) DESC 
+    ) AS rank_column
+ FROM
+    rides_by_zone
+ GROUP BY
+    borough, month
+ ORDER BY
+    borough, COUNT(*) DESC 
+)
+SELECT
+ borough, month, total_rides
+FROM
+ monthly
+WHERE
+ rank_column = 1;
+
+SELECT * FROM borough_most_pop_month_vw;
+
+
+-- Lab 3; Part 5; Step 5
+SELECT * FROM borough_most_pop_month_vw;
+
+SELECT * FROM discovered_schema.year_month;
+
+SELECT * FROM discovered_schema.year_month;
+DELETE FROM discovered_schema.year_month where year_month = '2015-09';
+SELECT * FROM borough_most_pop_month_vw;
