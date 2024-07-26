@@ -1,0 +1,27 @@
+{
+  "environment": "web",
+  "format": "html",
+  "prefix": "https://storage.googleapis.com",
+  "mainga": "UA-49880327-14",
+  "updated": "2024-07-25T18:44:23Z",
+  "id": "dataflow-foundations",
+  "duration": 41,
+  "title": "Dataflow foundations",
+  "authors": "Lester Martin",
+  "summary": "In this codelab, you will explore the Datavolo UI, leverage various component types, and assemble a simple dataflow.",
+  "source": "1HarPqfXOS3j2jlWTUflU5xVicoRb1V5ux7ykp1zD28Y",
+  "theme": "tutorial",
+  "status": [
+    "published"
+  ],
+  "category": [
+    "tutorial"
+  ],
+  "tags": [
+    "kiosk",
+    "web"
+  ],
+  "feedback": "https://datavolo.io/contact-us/",
+  "ga": "G-JMQBYBQE82",
+  "url": "dataflow-foundations"
+}
