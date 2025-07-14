@@ -6,6 +6,4 @@ The presentation deck is in this folder if you are interested. I plan on posting
 
 If interested in my blog posts on Trino, you can find them on [lestermartin.blog](https://lestermartin.blog/tag/trino/).
 
-![Talk abstract](./Lester Martin_Talk_B1.png "Talk abstract")
-
-
+![Talk abstract](./Lester_Martin_Talk_B1.png "Talk abstract")
