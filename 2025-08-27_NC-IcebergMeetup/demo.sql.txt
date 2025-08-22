@@ -1,0 +1,393 @@
+SHOW CATALOGS;
+
+-- tpch catalog is likely already attached to your cluster 
+--  if not, add it
+SHOW SCHEMAS FROM tpch;
+
+SHOW TABLES FROM tpch.sf1;
+
+SELECT * 
+  FROM tpch.sf1.nation;
+
+USE tpch.sf1;
+
+DESCRIBE nation;
+
+
+-- setup an object store catalog; calling mine 'mycloud'
+--  for some limited testing, the following tutorial offers some S3 creds you can use briefly
+--  https://devcenter.starburst.io/tutorials/configure-a-starburst-galaxy-data-lake-catalog-and-schema 
+drop schema mycloud.ncdemo cascade;
+create schema mycloud.ncdemo;
+use mycloud.ncdemo;
+
+-- copy over a table from the tpch connector
+create table region 
+with (type='iceberg')
+as select * from tpch.sf1.region;
+
+select * from region;
+
+-- run a simple federated query
+SELECT
+  r.name as region_name,
+  n.name as nation_name
+FROM
+  tpch.sf1.nation n,
+  region r
+WHERE
+  n.regionkey = r.regionkey
+ORDER BY
+  region_name,
+  nation_name;
+
+
+-- create simple table
+CREATE TABLE my_iceberg_tbl (
+   id integer,
+   name varchar(55),
+   description varchar(255)
+) WITH (
+   TYPE = 'iceberg', FORMAT = 'parquet'
+);
+
+-- add some records
+INSERT INTO my_iceberg_tbl
+ (id, name, description)
+VALUES
+ (101, 'Leto', 'Ruler of House Atreides'),
+ (102, 'Jessica', 'Concubine of the Duke'),
+ (103, 'Paul', 'Son of Leto (aka Dale Cooper)');
+
+SELECT * FROM my_iceberg_tbl;
+
+
+-- check the history metadata table
+SELECT made_current_at,
+       snapshot_id, parent_id
+  FROM "my_iceberg_tbl$history"
+ ORDER BY made_current_at;
+
+-- show the file names that the data is in
+SELECT
+ substring(file_path, position('/data/' IN file_path) + 6)
+   AS file_path,
+ record_count,
+ value_counts,
+ null_value_counts,
+ lower_bounds,
+ upper_bounds
+FROM
+ "my_iceberg_tbl$files";
+
+
+
+-- add some more Dune characters
+ INSERT INTO my_iceberg_tbl
+ (id, name, description)
+VALUES
+ (104, 'Thufir', 'Mentat'),
+ (201, 'Vladimir', 'Ruler of House Harkonnen'),
+ (202, 'Rabban', 'Ruthless nephew of Vladimir'),
+ (203, 'Feyd-Rautha', 'Savvy nephew of Vladimir (played by Sting)'),
+ (301, 'Reverend Mother Gaius Helen Mohiam', null);
+
+-- check the files again
+SELECT
+ substring(file_path, position('/data/' IN file_path) + 6),
+ record_count,
+ value_counts,
+ null_value_counts,
+ lower_bounds,
+ upper_bounds
+FROM
+ "my_iceberg_tbl$files";
+
+ SELECT made_current_at,
+       snapshot_id, parent_id
+  FROM "my_iceberg_tbl$history"
+ ORDER BY made_current_at;
+
+
+-- create another test table
+CREATE TABLE phone_provisioning (
+ phone_nbr bigint,
+ event_time timestamp(6),
+ action varchar(15),
+ notes varchar(150)
+)
+WITH (
+ type='iceberg',
+ partitioning=ARRAY['day(event_time)']
+);
+-- just a single snapshot
+SELECT * FROM "phone_provisioning$snapshots";
+
+
+-- add some 'ordered' records
+INSERT INTO
+ phone_provisioning (phone_nbr, event_time, action, notes)
+VALUES
+ (
+   1111111, current_timestamp(6) - interval '7' day, 'ordered', null
+ ),
+ (
+   2222222, current_timestamp(6) - interval '7' day, 'ordered', null
+ );
+
+SELECT * FROM phone_provisioning ORDER BY event_time DESC;
+SELECT * FROM "phone_provisioning$snapshots";
+
+
+-- add some more statuses to same phones
+INSERT INTO
+ phone_provisioning (phone_nbr, event_time, action, notes)
+VALUES
+ (
+   1111111, current_timestamp(6) - interval '6' day, 'activated', null
+ ),
+ (
+   2222222, current_timestamp(6) - interval '6' day, 'activated', null
+ );
+
+SELECT * FROM phone_provisioning ORDER BY event_time DESC;
+SELECT * FROM "phone_provisioning$snapshots";
+
+
+-- insert a cust reported problem
+INSERT INTO
+  phone_provisioning (phone_nbr, event_time, action, notes)
+VALUES
+  (2222222, current_timestamp(6) - interval '5' day, 'errorReported',
+  'customer reports unable to initiate call');
+
+SELECT * FROM phone_provisioning ORDER BY event_time DESC;
+SELECT * FROM "phone_provisioning$snapshots";
+
+
+-- oops! should have put some more notes for standard records
+UPDATE phone_provisioning
+  SET notes = 'customer requested new number'
+WHERE action = 'ordered'
+  AND notes is null;
+
+UPDATE phone_provisioning
+  SET notes = 'number successfully activated'
+WHERE action = 'activated'
+  AND notes is null;
+
+SELECT * FROM phone_provisioning ORDER BY event_time DESC;
+SELECT * FROM "phone_provisioning$snapshots";
+
+
+-- time travel query back to specific snapshot for initial inserts
+SELECT * FROM phone_provisioning
+FOR VERSION AS OF 9999999999
+ORDER BY event_time DESC;
+
+
+-- time travel query as of 5 days ago
+SELECT * FROM phone_provisioning
+FOR TIMESTAMP AS OF current_timestamp(6) - interval '132' hour
+ORDER BY event_time DESC;
+
+SELECT * FROM phone_provisioning
+FOR TIMESTAMP AS OF current_timestamp(6) - interval '4' minute 
+ORDER BY event_time DESC;
+
+
+
+-- save the most recent snapshot_id value in the editor
+SELECT snapshot_id FROM "phone_provisioning$history"
+ORDER BY made_current_at DESC LIMIT 1;
+
+-- i got 9999999999
+
+
+-- mess up on purpose and delete all records for a given phone
+DELETE FROM phone_provisioning
+ WHERE phone_nbr = 2222222;
+
+SELECT * FROM phone_provisioning ORDER BY event_time DESC;
+
+-- roll back to where we were a minute ago
+CALL mycloud.system.rollback_to_snapshot(
+   'ncdemo', 'phone_provisioning',
+    9999999999);
+
+SELECT * FROM phone_provisioning ORDER BY event_time DESC;
+
+
+-- some quick magic to help see which snapshot is the current one!
+CREATE VIEW curr_ver_dets AS
+SELECT concat_ws(' > ', r.name, r.type) 
+           AS curr_ver,
+       date_format(s.committed_at, '%Y/%m/%d-%T')
+           AS committed_at,
+       s.snapshot_id, s.parent_id, 
+       h.is_current_ancestor, s.operation
+  FROM "phone_provisioning$snapshots" AS s
+  JOIN "phone_provisioning$history" AS h
+    ON (s.snapshot_id = h.snapshot_id)
+  LEFT JOIN "phone_provisioning$refs" AS r
+    ON (h.snapshot_id = r.snapshot_id)
+ ORDER BY s.committed_at;
+
+ select * from curr_ver_dets;
+
+
+-- another table to create
+CREATE TABLE planes (
+   tail_number varchar(15),
+   name varchar(150),
+   color varchar(15)
+) WITH ( type = 'iceberg');
+
+
+-- load a couple of planes
+INSERT INTO planes (tail_number, name)
+VALUES
+ ('N707JT', 'John Travolta''s Boeing 707'),
+ ('N1KE', 'Nike corp jet');
+
+
+-- change column name
+ ALTER TABLE planes RENAME COLUMN name TO description;
+
+ SELECT * FROM planes;
+
+
+-- add some more planes
+ INSERT INTO planes (tail_number, color, description)
+VALUES
+ ('N89TC', 'white',
+  '1975 Bombardier Learjet 35 w/Light Jet classification');
+
+
+-- make some more changes
+ALTER TABLE planes ADD COLUMN class varchar(50);
+ALTER TABLE planes ADD COLUMN year integer;
+ALTER TABLE planes ADD COLUMN make varchar(100);
+ALTER TABLE planes ADD COLUMN model varchar(100);
+
+ALTER TABLE planes DROP COLUMN color;
+
+
+-- mod some records
+UPDATE planes
+  SET class = 'Jet Airliner',
+      year = 1964,
+      make = 'Boeing',
+      model = '707-138B'
+WHERE tail_number = 'N707JT';
+
+UPDATE planes
+  SET class = 'Heavy Jet',
+      year = 2021,
+      make = 'Gulfstream',
+      model = 'G650'
+WHERE tail_number = 'N1KE';
+
+UPDATE planes
+  SET class = 'Light Jet',
+      year = 1975,
+      make = 'Bombardier',
+      model = 'Learjet 35',
+      description = null
+WHERE tail_number = 'N89TC';
+
+SELECT * FROM planes;
+
+
+-- rename table
+ALTER TABLE planes RENAME TO aircrafts;
+
+-- apply a partition strategy (we didn't have one before)
+ALTER TABLE aircrafts
+SET PROPERTIES partitioning = ARRAY['class'];
+
+
+-- add some helicopters this time
+INSERT INTO aircrafts
+ (tail_number, class, year, make, model, description)
+VALUES
+ ('N535NA', 'Helicopter', 1969, 'Sikorsky', 'UH-19D', 'NASA'),
+ ('N611TV', 'Helicopter', 2022, 'Robinson', 'R66', null);
+
+ SELECT tail_number, class, year, make, model, description
+  FROM aircrafts ORDER BY tail_number;
+
+
+-- verify original 6 records are still with the old non-partition scheme
+--  and the helicopters are writing to new partition strategy
+SELECT partition, record_count, file_count
+  FROM "aircrafts$partitions";
+
+
+-- swap partitioning strategy AGAIN
+ALTER TABLE aircrafts
+SET PROPERTIES partitioning = ARRAY['year'];
+
+-- verify there are only 5 distinct years and each only has 1 aircraft for it
+SELECT year, count() nbr_for_year
+  FROM aircrafts
+ GROUP BY year ORDER BY year;
+
+-- add a second, dummy, record for each of the years
+INSERT INTO aircrafts
+ (tail_number, class, year, make, model, description)
+VALUES
+ ('dummy', 'unknown', 1964, 'acme', 'cool', null),
+ ('dummy', 'unknown', 1969, 'acme', 'cool', null),
+ ('dummy', 'unknown', 1975, 'acme', 'cool', null),
+ ('dummy', 'unknown', 2021, 'acme', 'cool', null),
+ ('dummy', 'unknown', 2022, 'acme', 'cool', null);
+
+SELECT year, count() nbr_for_year
+  FROM aircrafts
+ GROUP BY year ORDER BY year;
+
+SELECT partition, record_count, file_count, data
+  FROM "aircrafts$partitions"
+ ORDER BY record_count;
+
+-- notice that the first two partition strategies' (not having one set WAS a strategy)
+--  records are still in the same place as before
+SELECT file_path, record_count, file_size_in_bytes
+  FROM "aircrafts$files";
+
+
+-- see that we have a few VERY VERY SMALL files
+SELECT file_path, record_count, file_size_in_bytes
+  FROM "aircrafts$files";
+
+-- compact them
+ALTER TABLE aircrafts EXECUTE optimize;
+
+-- did it help?
+SELECT file_path, record_count, file_size_in_bytes
+  FROM "aircrafts$files";
+
+
+-- helped a little (hey, small data at play here; haha), but
+--  did you notice all the rewritten files now support the new part strategy?? MAKE SENSE??
+SELECT partition, record_count, file_count, data
+  FROM "aircrafts$partitions"
+ ORDER BY record_count;
+
+
+-- CHANGE part strategy AGAIN (remember, no partitioning is still a part strategy)
+ALTER TABLE aircrafts
+SET PROPERTIES partitioning = ARRAY[];
+
+-- they are all still "small" and will try to be rewritten into fewer, bigger, files
+ALTER TABLE aircrafts EXECUTE optimize;
+
+SELECT file_path, record_count, file_size_in_bytes
+  FROM "aircrafts$files";
+
+-- yep, they were rewritten wiht the CURRENT part strategy
+SELECT partition, record_count, file_count, data
+  FROM "aircrafts$partitions"
+ ORDER BY record_count;
+
