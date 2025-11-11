@@ -2,4 +2,4 @@
 
 [Meetup Event Link](https://luma.com/m1ql99ct)
 
-![Lakeside AI](./ATL-Meeup.jpeg "Iceberg Meetup")
+![Lakeside AI](./ATL-meetup.jpeg "Iceberg Meetup")
